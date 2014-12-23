@@ -3,7 +3,6 @@
 
 contrib(){
 	echo "leovidal - leovidal_23@hotmail.com - 2014"
-	echo "pklaus - philipp.l.klaus@web.de - 2014"
 
 }
 
