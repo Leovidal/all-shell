@@ -1,0 +1,64 @@
+MONITORING MONGODB WITH MONITIS
+
+Original Author: Arthur Tumanyan
+
+Company: Netangels
+
+Web Site: http://www.netangels.net
+
+OVERVIEW:
+---------
+These scripts allow a user to easily get some monitoring around MongoDB instance using Monitis.
+
+INSTALL:
+
+At first install required packages:
+	apt-get install git curl mongodb
+	# Make a copy of monitis linux scripts
+	git clone https://github.com/monitisexchange/Monitis-Linux-Scripts.git
+	cd Monitis-Linux-Scripts/MongoDB-monitor/bash/standalone
+	Run bash ./monitis-mongo-monitor [arguments]
+
+OTHER:
+
+	Change APIKEY & SECRETKEY in monitis_config according to your settings
+
+UNINSTALL:
+
+	rm -rf Monitis-Linux-Scripts/MongoDB-monitor/bash/standalone
+
+USAGE: 
+	monitis-mongo-monitor [-user|--username <username> -pwd|--pwd <password>] -mode|--mode <daemon|plugin|query>  -host|--host <hostname> -port|--port <port> -idletime|--idletime <seconds> -query|--query <mongodb query> -metrics|--metrics <metric1,metric2,metricN>
+
+ARGUMENTS:
+	user - mongodb database user
+	pwd - mongodb database password
+	mode - monitor mode
+		daemon -- just sends all metrics available every <idletime> seconds to the monitis server
+		plugin -- works in plugin mode , outputs requested metric's values
+		query -- outputs specified query value, value mining requested time and the difference from previous value if it is numeric
+
+	host - mongodb database host
+	port - mongodb database port
+	idletime - data will be sent to server every <idletime> seconds (default value is 10s)
+	metrics - metrics to be retrived. In modes other than query it can be comma separated list like "metric1",metric2,metricN
+	query - mongodb query (query syntax like in mongo shell. Example: /usr/bin/mongo --eval "db")
+	database - the database name to connect to
+
+EXAMPLES:
+	./monitis-mongo-monitor
+
+	./monitis-mongo-monitor -user mongouser \
+				-pwd secret \
+				-mode plugin \
+				-host mongoserverhost \
+				-port portnum \
+				-idletime 15 \
+				-metrics "Insert",Delete,Update
+
+	./monitis-mongo-monitor -mode query \
+				-query "db.getCollectionNames()" \
+				-database mongodb_name
+--
+Do not use printjson() in query, it can cause invalid results.
+The 'database' parameter is useless unless mode is not 'query'

@@ -1,0 +1,5 @@
+#!/bin/sh
+#Elaborated by Leovidal
+dropcache(){
+	echo 3 > /proc/sys/vm/drop_caches
+}

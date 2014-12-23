@@ -1,0 +1,805 @@
+#!/bin/bash
+:
+
+#set -x
+
+PREV_FILE="$(dirname $0)"/.mmm_prev
+empty=0
+#
+export PATH=/usr/bin:/usr/local/bin:/bin:/usr/sbin:/usr/local/sbin
+#
+declare USER_NAME
+declare PSWD
+declare HOST_NAME
+declare PORT_NO
+declare METRICS
+declare DB_NAME
+declare USE_AUTH
+#
+USE_AUTH=false
+PARAM_ERROR_STRING="Missing parameter name"
+RETURN_CODE=0
+
+##############
+
+
+##############
+usage(){
+
+echo "Usage: $0 [-user|--user <username> -pwd|--pwd <password>]  -host|--host <hostname> -port|--port <port> -metrics|--metrics <metric1,metric2,metricN>"
+echo "Supported metrics are: "
+echo "globalLock.lockTime	- The value of lockTime represents the time, in microseconds, since the database last started, that the globalLock has been held. "
+echo "globalLock.ratio		- The value of ratio displays the relationship between lockTime and totalTime."
+echo "mem.resident		- The value of resident is roughly equivalent to the amount of RAM, in megabytes (MB), currently used by the database process. In normal use this value tends to grow. In dedicated database servers this number tends to approach the total amount of system memory.
+"
+echo "mem.virtual		- Virtual displays the quantity, in megabytes (MB), of virtual memory used by the mongod process."
+echo "mem.mapped		- The value of mapped provides the amount of mapped memory, in megabytes (MB), by the database."
+echo "connections.current	- The value of current corresponds to the number of connections to the database server from clients."
+echo "connections.available	- available provides a count of the number of unused available connections that the database can provide. Consider this value in combination with the value of current to understand the connection load on the database, and the Linux ulimit Settings document for more information about system thresholds on available connections.
+."
+echo "backgroundFlushing.flushes - flushes is a counter that collects the number of times the database has flushed all writes to disk."
+echo "backgroundFlushing.total_ms - The total_ms value provides the total number of milliseconds (ms) that the mongod processes have spent writing (i.e. flushing) data to disk"
+echo "backgroundFlushing.average_ms - The average_ms value describes the relationship between the number of flushes and the total amount of time that the database has spent writing data to disk."
+echo "backgroundFlushing.last_ms - The value of the last_ms field is the amount of time, in milliseconds, that the last flush operation took to complete"
+echo "opcounters.insert  	- # of inserts per second (* means replicated op)"
+echo "opcounters.query    	- query provides a counter of the total number of queries since the mongod instance last started.
+"
+echo "opcounters.update   	- update provides a counter of the total number of update operations since the mongod instance last started."
+echo "opcounters.delete   	- delete provides a counter of the total number of delete operations since the mongod instance last started."
+echo "opcounters.getmore  	- getmore provides a counter of the total number of “getmore” operations since the mongod instance last started. This counter can be high even if the query count is low. Secondary nodes send getMore operations as part of the replication process."
+echo "opcounters.command  	- command provides a counter of the total number of commands issued to the database since the mongod instance last started."
+echo "asserts.regular  	- The regular counter tracks the number of regular assertions raised since the server process started."
+echo "asserts.warning   	- The warning counter tracks the number of warnings raised since the server process started."
+echo "asserts.msg    	- The msg counter tracks the number of message assertions raised since the server process started."
+echo "asserts.user      	- The user counter reports the number of “user asserts” that have occurred since the last time the server process started."
+echo "asserts.rollovers   	- The rollovers counter displays the number of times that the rollover counters have rolled over since the last time the server process started."
+
+
+        RETURN_CODE=1
+        exit $RETURN_CODE
+}
+#
+#
+save(){
+	echo "$1"|sed -e 's/^[ \r]*//' > $PREV_FILE
+}
+#
+###################################################################################################
+# Checking for input parameters
+###################################################################################################
+#
+if [[ $# -le 3 ]]
+then
+	usage
+fi
+while [ $# -gt 0 ]    # Until run out of parameters . . .
+do
+	case $1 in
+    	-u | --user | -user )  			USER_NAME="$2"; shift	;;
+    	-p | --pwd | -pwd ) 			PSWD="$2"; shift	;;
+    	-h | --host | -host )  			HOST_NAME="$2"; shift	;;
+    	-t | --port | -port )  			PORT_NO="$2"; shift	;;
+    	-m | --metrics | -metrics )		METRICS="$2"; shift ;;
+	-d | --database | -database )		DB_NAME="$2"; shift ;;
+    	*) ;; # unknown option		
+  	esac
+  	shift
+done
+#
+
+#
+if [[ -z $(which mongo) ]]
+then
+echo "Mongo not found"
+exit 1
+fi
+#
+METRICS=${METRICS/'['/''}
+METRICS=${METRICS/%']'/''}
+#
+if [[ -n $USER_NAME ]]
+then
+	USE_AUTH=true
+	if [ -z "$PSWD" ]; then
+                echo "$PARAM_ERROR_STRING 'pwd'"
+                RETURN_CODE=1
+		exit $RETURN_CODE 
+        fi
+
+        if [ -z "$HOST_NAME" ]; then
+                echo "$PARAM_ERROR_STRING 'host'"
+                RETURN_CODE=1
+		exit $RETURN_CODE
+        fi
+
+        if [ -z "$PORT_NO" ]; then
+                echo "$PARAM_ERROR_STRING 'port'"
+                RETURN_CODE=1
+		exit $RETURN_CODE
+        fi
+	if [ -z "$METRICS" ]; then
+		echo "$PARAM_ERROR_STRING 'metrics'"
+		RETURN_CODE=1
+		exit $RETURN_CODE
+	fi
+
+fi
+#
+
+#
+if [[ $USE_AUTH == true ]]
+then
+	MONGOSTAT_OPTS=" --host $HOST_NAME:$PORT_NO -u $USER_NAME -p $PSWD"
+else
+	MONGOSTAT_OPTS=" --host $HOST_NAME:$PORT_NO"
+fi
+#
+if [[ ! -f $PREV_FILE || -z $(cat $PREV_FILE) ]]
+then
+	empty=1
+fi
+
+#
+error=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()' $DB_NAME | grep -o 'exception')
+if [[ $error == "exception" ]]
+then
+  echo "An error accured while connecting to mongodb"
+  echo "Check host and port parameters"
+  exit 1
+fi
+#
+if [[ ! -f $PREV_FILE ]]
+then
+  echo > $PREV_FILE
+fi
+#
+splited_metrics=$(echo $METRICS|tr ',' ' ')
+NOW=$(date '+%s')
+BEFORE=$(cat $PREV_FILE|grep 'timestamp'|awk '{print $2}')
+if [[ -z $BEFORE ]];then
+	BEFORE=0
+fi
+DIFFER=$(( $NOW - $BEFORE ))
+if [[ 0 -eq $DIFFER ]]
+then
+	DIFFER=1
+fi
+save_value="timestamp "$(echo $NOW|sed "s/$/\\`echo -e '\n\r'`/g")
+#
+
+mem_supported=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["mem"]["supported"]' $DB_NAME|tail -1)
+if [[ -z $mem_supported ]]
+then
+  mem_supported="false"
+fi
+
+#
+for metric in $splited_metrics
+do
+	case "$metric" in
+
+	"globalLock.lockTime")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'globalLock.lockTime'| awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["globalLock"]["lockTime"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		current=$(awk -vc=$current 'BEGIN{ print c / 1000000 }' | sed -e 's/[eE]+*/\*10\^/')
+		result=$(awk -vc=$current -vp=$prev 'BEGIN{ print c - p }' | sed -e 's/[eE]+*/\*10\^/')
+
+	test -z $result && result=0
+
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT globalLock.lockTime="$result
+	save_value="$save_value globalLock.lockTime "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"globalLock.totalTime")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'globalLock.totalTime'| awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["globalLock"]["totalTime"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/' )
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev 'BEGIN{ print c - p }' | sed -e 's/[eE]+*/\*10\^/')
+	test -z $result && result=0
+
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	result=$(printf %0.3f $result)
+	totaltime=$result
+	#
+	save_value="$save_value globalLock.totalTime "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"globalLock.ratio")
+#
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'globalLock.lockTime'| awk '{print $2}')
+	_current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["globalLock"]["lockTime"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/' )
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		current=$(awk -vc=$_current 'BEGIN{ print c / 1000000 }' | sed -e 's/[eE]+*/\*10\^/' )
+		locktime=$(awk -vc=$current -vp=$prev 'BEGIN{ print c - p }' | sed -e 's/[eE]+*/\*10\^/' )
+		
+	test -z $current && current=1
+	test -z $locktime && locktime=1
+	locktime=$(printf %0.3f $locktime)
+	
+	if [[ 1 -eq $(echo "$locktime < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'globalLock.totalTime'| awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["globalLock"]["totalTime"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		totaltime=$(awk -vc=$current -vp=$prev 'BEGIN{ print c - p }' | sed -e 's/[eE]+*/\*10\^/')
+	
+	if [[ 1 -eq $(echo "$totaltime < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+#	#
+	#
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'globalLock.ratio'| awk '{print $2}')
+
+	if [[ -z $prev ]]
+	then
+		prev=0 
+	fi
+
+	if [[ $(echo "$totaltime == 0"|bc) || -z $totaltime ]]
+	then
+		totaltime=1 # avoiding division by zero
+	fi
+
+	result=$(awk -vc=$locktime -vp=$totaltime 'BEGIN{ print c / p }' )
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+		#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT globalLock.ratio="$result
+	save_value="$save_value globalLock.ratio "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"mem.resident")
+	if [[ $mem_supported == "true" ]]
+	then
+	  test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'mem.resident'|awk '{print $2}')
+	  current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["mem"]["resident"]' $DB_NAME|tail -1)
+	  if [[ -z $prev ]]
+	  then
+		  prev=0
+	  fi
+	  result=$current
+	  test -z $result && result=0
+	  if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	  then
+		  echo "wrongResult=True"
+		  save "$save_value"
+		  exit
+	  fi
+	  #
+	#
+	result=$(printf %0.3f $result)
+	else
+	  result=-1
+	fi
+
+	OUTPUT=" $OUTPUT mem.resident="$result
+	save_value="$save_value mem.resident "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+
+	;;
+##########
+	"mem.virtual")
+	if [[ $mem_supported == "true" ]]
+	then
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["mem"]["virtual"]' $DB_NAME|tail -1)
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+	result=$current
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	else
+	  result=-1
+	fi
+
+	OUTPUT=" $OUTPUT mem.virtual="$result
+	save_value="$save_value mem.virtual "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"mem.mapped")
+	if [[ $mem_supported == "true" ]]
+	then
+	  current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["mem"]["mapped"]' $DB_NAME|tail -1)
+	  if [[ -z $prev ]]
+	  then
+		  prev=0
+	  fi
+	  result=$current
+	  test -z $result && result=0
+	  
+	  if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	  then
+		  echo "wrongResult=True"
+		  save "$save_value"
+		  exit
+	  fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	else
+	  result=-1
+	fi
+
+	OUTPUT=" $OUTPUT mem.mapped="$result
+	save_value="$save_value mem.mapped "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"connections.current")
+
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["connections"]["current"]' $DB_NAME|tail -1)
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+	result=$current
+	test -z $result && result=0	
+	
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT connections.current="$result
+	save_value="$save_value connections.current "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"connections.available")
+
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["connections"]["available"]' $DB_NAME|tail -1)
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+	result=$current
+	test -z $result && result=0	
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT connections.available="$result
+	save_value="$save_value connections.available "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"backgroundFlushing.flushes")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'backgroundFlushing.flushes'| awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["backgroundFlushing"]["flushes"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }' | sed -e 's/[eE]+*/\*10\^/')
+
+	
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT backgroundFlushing.flushes="$result
+	save_value="$save_value backgroundFlushing.flushes "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"backgroundFlushing.total_ms")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'backgroundFlushing.total_ms'|awk '{print $2}')
+	_current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["backgroundFlushing"]["total_ms"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		current=$(awk -vc=$_current 'BEGIN { print c / 1000 }' | sed -e 's/[eE]+*/\*10\^/')
+		result=$(awk -vc=$current -vp=$prev 'BEGIN { print c - p }' | sed -e 's/[eE]+*/\*10\^/')
+		totalms=$result
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT backgroundFlushing.total_ms="$result
+	save_value="$save_value backgroundFlushing.total_ms "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"backgroundFlushing.average_ms")
+#
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'backgroundFlushing.total_ms'|awk '{print $2}')
+	_current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["backgroundFlushing"]["total_ms"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		current=$(awk -vc=$_current 'BEGIN { print c / 1000 }'| sed -e 's/[eE]+*/\*10\^/')
+		totalms=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'| sed -e 's/[eE]+*/\*10\^/' )
+		test -z $totalms && totalms=0
+#
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'backgroundFlushing.flushes'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["backgroundFlushing"]["flushes"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+	flushes=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }' | sed -e 's/[eE]+*/\*10\^/')
+	test -z $flushes && flushes=0
+	
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	flushes=$(printf %0.3f $flushes)
+	#
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'backgroundFlushing.average_ms'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["backgroundFlushing"]["average_ms"]' $DB_NAME|tail -1)
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$totalms -vp=$flushes 'BEGIN { print c / p }' | sed -e 's/[eE]+*/\*10\^/')
+		result=$(echo $result|sed -e 's/[eE]+*/\*10\^/')
+	
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT backgroundFlushing.average_ms="$result
+	save_value="$save_value backgroundFlushing.average_ms "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"backgroundFlushing.last_ms")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'backgroundFlushing.last_ms'|awk '{print $2}')
+	_current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["backgroundFlushing"]["last_ms"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$_current 'BEGIN { print c / 1000 }'| sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT backgroundFlushing.last_ms="$result
+	save_value="$save_value backgroundFlushing.last_ms "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"opcounters.insert")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'opcounters.insert'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["opcounters"]["insert"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }' |sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT opcounters.insert="$result
+	save_value="$save_value opcounters.insert "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+##########
+	"opcounters.query")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'opcounters.query'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["opcounters"]["query"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'| sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT opcounters.query="$result
+	save_value="$save_value opcounters.query "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"opcounters.update")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'opcounters.update'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["opcounters"]["update"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'| sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT opcounters.update="$result
+	save_value="$save_value opcounters.update "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"opcounters.delete")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'opcounters.delete'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["opcounters"]["delete"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'| sed -e 's/[eE]+*/\*10\^/')
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT opcounters.delete="$result
+	save_value="$save_value opcounters.delete "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"opcounters.getmore")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'opcounters.getmore'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["opcounters"]["getmore"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+	result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'| sed -e 's/[eE]+*/\*10\^/')
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT opcounters.getmore="$result
+	save_value="$save_value opcounters.getmore "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"opcounters.command")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'opcounters.command'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["opcounters"]["command"]' $DB_NAME|tail -1| sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+	result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'|sed -e 's/[eE]+*/\*10\^/')
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT opcounters.command="$result
+	save_value="$save_value opcounters.command "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"asserts.regular")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'asserts.regular'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["asserts"]["regular"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'|sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT asserts.regular="$result
+	save_value="$save_value asserts.regular "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"asserts.warning")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'asserts.warning'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["asserts"]["warning"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'|sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT asserts.warning="$result
+	save_value="$save_value asserts.warning "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"asserts.msg")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'asserts.msg'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["asserts"]["msg"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'| sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT asserts.msg="$result
+	save_value="$save_value asserts.msg "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"asserts.user")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'asserts.user'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["asserts"]["user"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+		result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }'| sed -e 's/[eE]+*/\*10\^/')
+		test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT asserts.user="$result
+	save_value="$save_value asserts.user "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+	"asserts.rollovers")
+	test $empty -ne 1 && prev=$(cat $PREV_FILE|grep 'asserts.rollovers'|awk '{print $2}')
+	current=$(mongo $MONGOSTAT_OPTS --eval 'db.serverStatus()["asserts"]["rollovers"]' $DB_NAME|tail -1|sed -e 's/[eE]+*/\*10\^/')
+	if [[ -z $prev ]]
+	then
+		prev=0
+	fi
+	result=$(awk -vc=$current -vp=$prev -vd=$DIFFER 'BEGIN { print (c - p) / d }' | sed -e 's/[eE]+*/\*10\^/')
+	test -z $result && result=0
+	if [[ 1 -eq $(echo "$result < 0"|bc) ]]
+	then
+		echo "wrongResult=True"
+		save "$save_value"
+		exit
+	fi
+	#
+	#
+	result=$(printf %0.3f $result)
+	OUTPUT=" $OUTPUT asserts.rollovers="$result
+	save_value="$save_value asserts.rollovers "$(echo $current|sed "s/$/\\`echo -e '\n\r'`/g")
+	;;
+##########
+esac
+done
+#
+save "$save_value"
+#
+if [[ $empty -eq 1 ]]
+then
+	echo "wrongResult=True"
+	save "$save_value"
+else
+	echo $OUTPUT
+fi
+
+exit $RETURN_CODE
+

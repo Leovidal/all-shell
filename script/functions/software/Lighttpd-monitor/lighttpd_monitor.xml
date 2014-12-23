@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<config>
+	<apicredentials apikey="%API_KEY%" secretkey="%SECRET_KEY%"/>
+	<agent name="lighttpd monitor" interval="60">
+		<monitor name="Lighttpd">
+			<exectemplate>lighttpd-grep|awk -F ':' '{print $2}'</exectemplate>
+			
+			<metric name="Uptime">
+				<type>string</type>
+				<uom>NA</uom>
+				<line>1</line>
+			</metric>
+			
+			<metric name="Connections">
+				<type>integer</type>
+				<uom>NA</uom>
+				<line>2</line>
+			</metric>
+
+			<metric name="Requests since start">
+				<type>integer</type>
+				<uom>NA</uom>
+				<line>3</line>
+			</metric>
+
+			<metric name="Traffic since start">
+				<type>integer</type>
+				<uom>NA</uom>
+				<line>4</line>	
+			</metric>
+
+			<metric name="Average requests since start">
+				<type>integer</type>
+				<uom>NA</uom>
+				<line>5</line>
+			</metric>
+
+			<metric name="Average traffic since start">
+				<type>integer</type>
+				<uom>NA</uom>
+				<line>6</line>
+			</metric>
+			<metric name="Average requests with 5s slide">
+                                <type>integer</type>
+                                <uom>NA</uom>
+                                <line>7</line>
+                        </metric>
+
+                        <metric name="Average traffic with 5s slide">
+                                <type>integer</type>
+                                <uom>NA</uom>
+                                <line>8</line>
+                        </metric>
+						
+		</monitor>
+	</agent>
+</config>

@@ -1,0 +1,225 @@
+#!/bin/bash
+
+# cacti/interface.sh - an integration of cacti and monitis
+# Written by Dan Fruehauf <malkodan@gmail.com>
+
+# this will usually not change
+#declare -r CACTI_DIR=/var/lib/cacti
+
+# this is the subdir where cacti stores it's RRD data
+declare -r CACTI_RRA_SUFFIX=rra
+
+############################################
+############# PUBLIC INTERFACE #############
+############################################
+
+# list all hosts
+# $1 - cacti directory
+list_hosts() {
+	local cacti_dir=$1; shift
+	(cd $cacti_dir/$CACTI_RRA_SUFFIX && ls -1 | cut -d'_' -f1) | sort | uniq
+}
+
+# list all monitors
+# $1 - cacti directory
+# $2 - hostname
+list_monitors() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	(cd $cacti_dir/$CACTI_RRA_SUFFIX && ls -1 ${hostname}_*) | sed -e "s#_[0-9]*$CACTI_RRD_SUFFIX##g" | cut -d_ -f2- | sort | uniq
+}
+
+# returns the counters a monitor supports
+# $1 - cacti directory
+# $2 - hostname
+# $3 - monitor name
+list_counters_for_monitor() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	local monitor_name=$1; shift
+	rrdtool info $cacti_dir/$CACTI_RRA_SUFFIX/${hostname}_${monitor_name}_*$CACTI_RRD_SUFFIX  | grep "^ds\[" | cut -d. -f1 | sed -e 's#^ds\[##g' -e 's#\]$##g' | sort | uniq
+}
+
+# add a single monitor with description and appropriate counters
+# $1 - cacti directory
+# $2 - hostname
+# $3 - monitor name
+# $@ - counters to add, or 'ALL' if you want to add them all
+add_monitor() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	local monitor_name=$1; shift
+	# add all counters if user wants it...
+	local counters="$@"
+	if [ x"$counters" = x ]; then
+		echo "No counters specified, use 'ALL' to add them all" 1>&2
+		return 1
+	elif [ "$counters" == "ALL" ]; then
+		local counters=`list_counters_for_monitor $cacti_dir $hostname $monitor_name | xargs`
+	else
+		# if user specified them, make sure they actually exist
+		if ! _validate_counters $cacti_dir $hostname $monitor_name $counters; then
+			echo "Some counters specified are invalid, aborting" 1>&2
+			return 1
+		fi
+	fi
+
+	if [ x"$counters" = x ]; then
+		echo "No counters found for monitor '$monitor_name'"
+		return 1
+	fi
+	echo "Adding $monitor_name for $hostname with counters '$counters'"
+
+	# get description and UOM
+	local monitor_description=`_get_monitor_description $cacti_dir $hostname $monitor_name`
+	local monitor_uom=`_get_monitor_uom $cacti_dir $hostname $monitor_name`
+
+	# format result parameters for monitis
+	local counter
+	for counter in $counters; do
+		local counter_name=$counter
+		local counter_display_name=$counter
+		local counter_uom=$monitor_uom
+		# TODO it's always integer (2)
+		local -i counter_datatype=2
+		local result_params="$result_params;$counter_name:$counter_display_name:$counter_uom:$counter_datatype"
+	done
+	# remove first ';' as it is unneeded
+	result_params=${result_params:1}
+
+	echo "Monitor description will be '$monitor_description'"
+	echo "Monitor UOM will be '$monitor_uom'"
+	echo "Monitor result_params will be '$result_params'"
+	local monitor_tag=`_canonize_monitor_tag_from_name $hostname $MONITIS_TAG_PREFIX $monitor_name`
+
+	# add the monitor calling monitis api
+	monitis_add_custom_monitor $monitor_name $monitor_tag "$result_params"
+}
+
+# returns data for monitor by querying every counter
+# $1 - cacti directory
+# $2 - hostname
+# $3 - monitor name
+# $@ - counters to update, or ALL if you want to add them all
+update_data_for_monitor() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	local monitor_name=$1; shift
+	local monitor_tag=`_canonize_monitor_tag_from_name $hostname $MONITIS_TAG_PREFIX $monitor_name`
+	local counters="$@"
+	if [ x"$counters" != x -a "$counters" == "ALL" ]; then
+		local counters=`list_counters_for_monitor $cacti_dir $hostname $monitor_name | xargs`
+	else
+		# if user specified them, make sure they actually exist
+		if ! _validate_counters $cacti_dir $hostname $monitor_name $counters; then
+			echo "Some counters specified are invalid, aborting" 1>&2
+			return 1
+		fi
+	fi
+
+	# get the data
+	for counter in $counters; do
+		local data=`_get_last_data_for_counter $cacti_dir $hostname $monitor_name $counter`
+		data_for_update="$data_for_update;$counter:$data"
+	done
+	# remove first ';' as it is unneeded
+	data_for_update=${data_for_update:1}
+
+	# call monitis api to update data
+	monitis_update_custom_monitor_data $monitor_tag "$data_for_update"
+}
+
+############################################
+############# PRIVATE METHODS ##############
+############################################
+
+# suffix for rrd files
+declare -r CACTI_RRD_SUFFIX=".rrd"
+
+# this is the tag prefix in monitis
+declare -r MONITIS_TAG_PREFIX="cacti"
+
+# if user specified them, make sure they actually exist
+# $@ - counters to validate
+# returns true if all counters are valid
+_validate_counters() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	local monitor_name=$1; shift
+	local -i retval=0
+	local valid_counters=`list_counters_for_monitor $cacti_dir $hostname $monitor_name | xargs`
+	local counter
+	for counter in "$@"; do
+		if ! echo $valid_counters | grep -q "\b$counter\b" >& /dev/null; then
+			echo "'$counter' is an invalid counter" 1>&2
+			let retval=$retval+1
+		fi
+	done
+	return $retval
+}
+
+# returns the description of a monitor
+# $1 - cacti directory
+# $2 - hostname
+# $3 - monitor name
+_get_monitor_description() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	local monitor_name=$1; shift
+	echo "TODO"
+	#grep "$hostname;$hostname:$monitor_name\.graph_title" $cacti_dir/datafile | cut -d' ' -f2-
+}
+
+# returns the UOM (unit of measurement) of a monitor
+# $1 - cacti directory
+# $2 - hostname
+# $3 - monitor name
+_get_monitor_uom() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	local monitor_name=$1; shift
+	echo "TODO"
+	#grep "$hostname;$hostname:$monitor_name\.graph_vlabel" $cacti_dir/datafile | cut -d' ' -f2-
+}
+
+
+# returns last data in monitor using 'rrdtool lastupdate'
+# $1 - cacti directory
+# $2 - hostname
+# $3 - monitor name
+_get_last_data_for_counter() {
+	local cacti_dir=$1; shift
+	local hostname=$1; shift
+	local monitor_name=$1; shift
+	local counter=$1; shift
+
+	# cacti stores multiple counters in the same file, we'll handle it
+	# differently than munin
+	# dump the lastupdate data using rrdtool to a file, it'll look like:
+	#  load_1min load_5min load_15min
+	#
+	# 1308795002: 0.02 0.10 0.14
+
+	local tmp_file=`mktemp`
+	rrdtool lastupdate $cacti_dir/$CACTI_RRA_SUFFIX/${hostname}_${monitor_name}_*$CACTI_RRD_SUFFIX > $tmp_file
+
+	# now start parsing it...
+	data_fields_array=(`tail -1 $tmp_file | cut -d: -f2-`)
+	counter_names_array=(`head -1 $tmp_file | sed -e 's/^ //g'`)
+	local -i i=0
+	local counter_name
+	for counter_name in ${counter_names_array[@]}; do
+		if [ "$counter_name" = "$counter" ]; then
+			echo ${data_fields_array[$i]}
+			# return here, we got our data - just cleanup before this...
+			rm -f $tmp_file
+			unset data_fields_array counter_names_array
+			return 0
+		fi
+		let i=$i+1
+	done
+
+	# unset these, as arrays can't be local in bash
+	unset data_fields_array counter_names_array
+	rm -f $tmp_file
+}
