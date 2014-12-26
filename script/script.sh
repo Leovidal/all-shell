@@ -1,3 +1,7 @@
+
+########### Nonfunctional
+
+
 #!/bin/bash
 ## Elaborated by Leovidal
 
